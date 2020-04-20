@@ -1,0 +1,38 @@
+syntax = "proto3";
+
+package api;
+
+option go_package = ".;api";
+
+service Echo {
+    rpc Echo(EchoRequest) returns (EchoResponse) {}
+
+    rpc StreamEcho(EchoRequest) returns (stream EchoResponse) {}
+
+    rpc FailingEcho(EchoRequest) returns (EchoResponse) {}
+
+    rpc IsLeader(Empty) returns (IsLeaderResponse) {}
+}
+
+message Empty{}
+
+message EchoRequest {
+    // A client_id
+    string client_id = 1;
+}
+
+message EchoResponse {
+    // server id
+    string server_id = 1;
+
+    // client id which made that request
+    string client_id = 2;
+
+    // clock time at server
+    int64 clock = 3;
+}
+
+message IsLeaderResponse {
+    // is leader or not
+    bool is_leader = 1;
+}
