@@ -1,14 +1,23 @@
 package main
 
 import (
+	"fmt"
 	"github.com/1xyz/grpc-playground/api"
 	"github.com/docopt/docopt-go"
 	"github.com/google/uuid"
 	"golang.org/x/net/context"
 	"google.golang.org/grpc"
+	_ "google.golang.org/grpc/health"
+	"google.golang.org/grpc/resolver"
+	"google.golang.org/grpc/resolver/manual"
 	"log"
 	"strings"
+	"time"
 )
+
+/// Don't ever forget to add this line in your import
+// _ "google.golang.org/grpc/health"
+// terrible, this is the worst
 
 var (
 	// see https://github.com/grpc/grpc/blob/master/doc/service_config.md to know more about service config
@@ -24,6 +33,13 @@ var (
 			  "RetryableStatusCodes": [ "UNAVAILABLE" ]
 		  }
 		}]}`
+
+	serviceConfig = `{
+		"loadBalancingPolicy": "round_robin",
+		"healthCheckConfig": {
+			"serviceName": ""
+		}
+	}`
 )
 
 // use grpc.WithDefaultServiceConfig() to set service config
@@ -53,6 +69,66 @@ func (e *echoClient) OpenSingle() {
 	}
 
 	log.Printf("resp = %v", resp)
+}
+
+func (e *echoClient) HealthCheck() {
+	// r, cleanup := manual.GenerateAndRegisterManualResolver()
+	// defer cleanup()
+	//
+	// addresses := make([]resolver.Address, 0)
+	// for _, s := range e.servers {
+	// 	addresses = append(addresses, resolver.Address{Addr: s})
+	// }
+	//
+	// log.Printf("%v\n", addresses)
+	//
+	// r.InitialState(resolver.State{
+	// 	Addresses: addresses,
+	// })
+
+	r, cleanup := manual.GenerateAndRegisterManualResolver()
+	defer cleanup()
+	r.InitialState(resolver.State{
+		Addresses: []resolver.Address{
+			{Addr: ":8080"},
+			{Addr: ":8081"},
+		},
+	})
+
+	address := fmt.Sprintf("%s:///unused", r.Scheme())
+
+	// address := fmt.Sprintf("%s:///unused", r.Scheme())
+	options := []grpc.DialOption{
+		grpc.WithInsecure(),
+		grpc.WithBlock(),
+		grpc.WithDefaultServiceConfig(serviceConfig),
+	}
+
+	conn, err := grpc.Dial(address, options...)
+	if err != nil {
+		log.Fatalf("did not connect %v", err)
+	}
+	defer conn.Close()
+
+	echoClient := api.NewEchoClient(conn)
+	for {
+		callUnaryEcho(echoClient)
+		time.Sleep(time.Second)
+	}
+}
+
+func callUnaryEcho(c api.EchoClient) {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	r, err := c.Echo(ctx, &api.EchoRequest{
+		ClientId: uuid.New().String(),
+	})
+
+	if err != nil {
+		log.Printf("UnaryEcho: _, err = %v\n", err)
+	} else {
+		log.Printf("UnaryEcho: clock = %v server_id %v \n", r.Clock, r.ServerId)
+	}
 }
 
 func main() {
@@ -86,5 +162,6 @@ options:
 		clientId: uuid.New().String(),
 	}
 
-	cli.OpenSingle()
+	// cli.OpenSingle()
+	cli.HealthCheck()
 }

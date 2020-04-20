@@ -7,6 +7,7 @@ import (
 	"golang.org/x/net/context"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	healthgrpc "google.golang.org/grpc/health/grpc_health_v1"
 	"google.golang.org/grpc/status"
 	"log"
 	"net"
@@ -67,6 +68,61 @@ func now() int64 {
 	return time.Now().UTC().Unix()
 }
 
+// ////////////////////////////////////////////////////////////////////////////////////////
+
+type HealthCheckServer struct {
+	healthgrpc.UnimplementedHealthServer
+
+	echoServer *EchoServer
+
+	tickDuration time.Duration
+
+	shutdownCh chan bool
+}
+
+func (h *HealthCheckServer) Check(ctx context.Context,
+	req *healthgrpc.HealthCheckRequest) (*healthgrpc.HealthCheckResponse, error) {
+	log.Printf("check: req svc: %v", req.Service)
+
+	s := healthgrpc.HealthCheckResponse_UNKNOWN
+	if h.echoServer == nil {
+		s = healthgrpc.HealthCheckResponse_UNKNOWN
+	} else {
+		if h.echoServer.isLeader {
+			s = healthgrpc.HealthCheckResponse_SERVING
+		} else {
+			s = healthgrpc.HealthCheckResponse_NOT_SERVING
+		}
+	}
+
+	return &healthgrpc.HealthCheckResponse{
+		Status: s,
+	}, nil
+}
+
+func (h *HealthCheckServer) Watch(req *healthgrpc.HealthCheckRequest, stream healthgrpc.Health_WatchServer) error {
+	ticker := time.NewTicker(h.tickDuration)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case t := <-ticker.C:
+			resp, err := h.Check(stream.Context(), req)
+			if err != nil {
+				return err
+			}
+
+			log.Printf("sending resp at %v resp=%v", t, resp)
+			stream.Send(resp)
+
+		case <-h.shutdownCh:
+			return nil
+		}
+	}
+}
+
+// ////////////////////////////////////////////////////////////////////////////////////////
+
 func main() {
 	usage := `usage: server [--address=<address>] [--leader]
 
@@ -94,8 +150,11 @@ options:
 		return
 	}
 
-	grpcServer := grpc.NewServer()
-	api.RegisterEchoServer(grpcServer, newEchoServer(isLeader))
+	s := grpc.NewServer()
+	echoServer := newEchoServer(isLeader)
+	api.RegisterEchoServer(s, echoServer)
+	healthcheck := newHealthCheckServer(echoServer)
+	healthgrpc.RegisterHealthServer(s, healthcheck)
 
 	log.Printf("addr = %v\n", addr)
 	lis, err := net.Listen("tcp", addr)
@@ -104,7 +163,7 @@ options:
 	}
 
 	log.Printf("started...")
-	if err := grpcServer.Serve(lis); err != nil {
+	if err := s.Serve(lis); err != nil {
 		log.Panic(err)
 	}
 }
@@ -119,6 +178,16 @@ func newEchoServer(isLeader bool) *EchoServer {
 
 	log.Printf("new server id = %v isLeader = %v\n",
 		a.isLeader, a.isLeader)
-
 	return a
+}
+
+func newHealthCheckServer(server *EchoServer) *HealthCheckServer {
+	h := &HealthCheckServer{
+		echoServer:   server,
+		tickDuration: time.Second,
+		shutdownCh:   make(chan bool),
+	}
+
+	log.Printf("created health checker server\n")
+	return h
 }
